@@ -7,27 +7,23 @@ from PIL import Image
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
-import ffmpeg
+# import ffmpeg
 import tempfile
 import cv2
 import asyncio
 import sys
 import redis
 import json
-from datetime import datetime
-
+from datetime import datetime, timedelta
+from ultralytics import YOLO
 # Connect to Redis
 redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
 
-# Function to log detections
-def log_detection(prediction, timestamp):
-    detection_entry = {"object": prediction, "timestamp": timestamp}
-    redis_client.rpush("detections", json.dumps(detection_entry))
 
 # if sys.platform == "win32":
 #     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 # --- YOLO Setup ---
-from ultralytics import YOLO
+
 
 # FFMPEG_PATH = r"C:\ffmpeg\bin\ffmpeg.exe"
 
@@ -42,6 +38,7 @@ yolo_model = load_yolo_model()
 # Function to run YOLO on an image and return multiple cropped regions
 def crop_with_yolo(pil_image):
     # Convert PIL image to numpy array in BGR format for YOLO
+
     image_np = np.array(pil_image.convert("RGB"))[:, :, ::-1]  # Convert RGB to BGR
     # Run detection
     results = yolo_model(image_np)
@@ -49,13 +46,13 @@ def crop_with_yolo(pil_image):
     
     if not results or len(results) == 0:
         st.warning("No objects detected by YOLO.")
-        return [pil_image]  # Return original image if no detections
+        return []  # Return original image if no detections
 
     first_result = results[0]
     # Check if bounding boxes were detected
     if first_result.boxes is None or len(first_result.boxes.xyxy) == 0:
         st.warning("No bounding boxes found.")
-        return [pil_image]
+        return []
 
     # Loop over each bounding box and crop the image
     for box in first_result.boxes.xyxy:
@@ -117,7 +114,7 @@ def train_model():
         clf.fit(X_train, y_train)
 
         accuracy = accuracy_score(y_test, clf.predict(X_test))
-        st.success(f"✅ Model trained successfully! Accuracy: {accuracy * 100:.2f}%")
+        st.success(f"✅ Classifier trained successfully! Accuracy: {accuracy * 100:.2f}%")
         
     return clf, class_names
 
@@ -177,34 +174,21 @@ def extract_frames_cv2(video_path, output_folder, frame_rate=12):
     
     return frames, frame_indices
 
-def extract_frames_ffmpeg(video_path, output_folder, frame_rate=5):
-    os.makedirs(output_folder, exist_ok=True)
-    output_pattern = os.path.join(output_folder, "frame_%03d.png")
-  
-    try:
-        process = (
-            ffmpeg
-            .input(video_path)
-            .output(output_pattern, vf=f'fps={frame_rate}')
-            .run(capture_stdout=True, capture_stderr=True)
-        )
-        
-        # Debugging Step: Check if images were created
-        frame_files = sorted([f for f in os.listdir(output_folder) if f.endswith('.png')])
-        
-        if not frame_files:
-            st.error("❌ FFmpeg did not generate any frames!")
-            return [], []
-        
-        frames = [Image.open(os.path.join(output_folder, f)) for f in frame_files]
-        frame_indices = [int(f.split('_')[1].split('.')[0]) for f in frame_files]
-        
-        return frames, frame_indices
+# Function to log detections
+def log_detection(prediction, timestamp):
+    # detection_entry = {"object": prediction, "timestamp": timestamp}
+    # redis_client.rpush("detections", json.dumps(detection_entry))
 
-    except ffmpeg.Error as e:
-        st.error("❌ Error extracting frames using FFmpeg!")
-        st.write(e.stderr.decode())  # Show detailed error message
-        return [], []  # Ensure the function does not return None
+    # key = f"object:{prediction}:timestamps"
+
+    redis_client.sadd(str(prediction), timestamp)
+
+def retrieve_object_frames(object):
+
+    timestamps = redis_client.smembers(str(object))
+
+    return timestamps
+
 # --- Streamlit App ---
 def app():
     st.title("🔍 Object Classification and Detection")
@@ -227,7 +211,7 @@ def app():
     if st.session_state["authenticated"]:
         st.sidebar.success("✅ Authenticated")
         
-        option = st.sidebar.selectbox("Choose an option:", ["Add Object", "Detect Object"])
+        option = st.sidebar.selectbox("Choose an option:", ["Add Object", "Detect Object", "Query Object"])
         clf, class_names = None, None
 
         if option == "Add Object":
@@ -263,30 +247,34 @@ def app():
                 test_image = st.file_uploader("Upload an Image for Classification", type=["jpg", "jpeg", "png"])
                 if test_image:
                     image = Image.open(test_image)
-                    st.image(image, caption="Uploaded Image", width=300)
+                    st.image(image, caption="Uploaded Image")
 
                     # ---- New: YOLO cropping step for multiple detections ----
                     with st.spinner("🔄 Cropping image using YOLO..."):
                         cropped_images = crop_with_yolo(image)
                     # Display each cropped image
-                    for idx, cropped_image in enumerate(cropped_images):
-                        st.image(cropped_image, caption=f"YOLO Cropped Region {idx+1}", width=300)
-                    # -------------------------------------------------------------
-
-                    with st.spinner("🔍 Loading trained model..."):
-                        clf, class_names = train_model()
-
-                    if clf:
-                        st.write("### Classification Results")
+                    if not cropped_images:
+                        st.write("### No Objects Detected")
+                        st.write("Try uploading a clearer picture")
+                    else:
                         for idx, cropped_image in enumerate(cropped_images):
-                            prediction, confidence, probabilities = classify(cropped_image, clf, class_names)
-                            st.write(f"**Region {idx+1} Prediction:** {prediction}")
-                            st.write(f"**Confidence:** {confidence:.2f}%")
-                            st.write("**Class Probabilities:**")
-                            for i, cls_name in enumerate(class_names):
-                                st.write(f"   - {cls_name}: {probabilities[i] * 100:.2f}%")
-                            st.markdown("---")
-                        # Optional warning if none of the detections are confident enough
+                            st.image(cropped_image, caption=f"YOLO Cropped Region {idx+1}")
+                        # -------------------------------------------------------------
+
+                        with st.spinner("🔍 Loading trained model..."):
+                            clf, class_names = train_model()
+
+                        if clf:
+                            st.write("### Classification Results")
+                            for idx, cropped_image in enumerate(cropped_images):
+                                prediction, confidence, probabilities = classify(cropped_image, clf, class_names)
+                                st.write(f"**Region {idx+1} Prediction:** {prediction}")
+                                st.write(f"**Confidence:** {confidence:.2f}%")
+                                st.write("**Class Probabilities:**")
+                                for i, cls_name in enumerate(class_names):
+                                    st.write(f"   - {cls_name}: {probabilities[i] * 100:.2f}%")
+                                st.markdown("---")
+                            # Optional warning if none of the detections are confident enough
 
             elif choice == "By Video":
                 video_file = st.file_uploader("Upload a video for object detection", type=["mp4", "avi", "mov"])
@@ -307,8 +295,6 @@ def app():
 
                         if st.button("🚀 Start Classification"):
                             detected_objects = {}
-                            successful_detections = 0
-                            unsuccessful_detections = 0
 
                             with st.spinner("🔍 Loading trained model..."):
                                 clf, class_names = train_model()
@@ -317,18 +303,18 @@ def app():
                                 for frame, frame_index in zip(frames, frame_indices):
                                     # ---- Run YOLO cropping on each frame ----
                                     cropped_regions = crop_with_yolo(frame)
+                                    if not cropped_regions:
+                                        st.warning(f"⚠️ No objects detected in frame {frame_index}. Skipping further processing for this frame.")
+                                        continue
                                     # Classify each detected region
                                     for idx, cropped_region in enumerate(cropped_regions):
                                         prediction, confidence, _ = classify(cropped_region, clf, class_names)
                                         st.image(cropped_region, caption=f"Frame {frame_index} - Region {idx+1}: {prediction} ({confidence:.2f}%)", width=300)
                                         if confidence > 50:
                                             detected_objects[prediction] = detected_objects.get(prediction, 0) + 1
-                                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                            timestamp = str(timedelta(seconds=frame_index // 24))
                                             log_detection(prediction, timestamp)
-                                            successful_detections += 1
-                                        else:
-                                            unsuccessful_detections += 1
-
+  
                                 st.write("### Detected Objects Summary:")
                                 if detected_objects:
                                     for obj, count in detected_objects.items():
@@ -337,8 +323,25 @@ def app():
                                     st.warning("⚠️ No confident objects detected in the video.")
 
                                 st.write("### Detection Summary:")
-                                st.write(f"**Successful detections:** {successful_detections}")
-                                st.write(f"**Unsuccessful detections:** {unsuccessful_detections}")
+
+                    
+        elif option == "Query Object":
+
+            objects = redis_client.keys("*")
+
+            if objects == []:
+                st.write("No objects in database, please run detection on a video first")
+            
+            else:
+                # query = st.radio("Select an object:", objects)
+                query = st.radio("Select an object:", os.listdir("dataset"))                          
+                timestamps = retrieve_object_frames(query)
+
+                if timestamps == []:
+                    st.write(f"**{query} was never detected in the video")
+                else:    
+                    st.write(f"**Video Timestamps where {query} was detected:** {sorted(timestamps)}")
+
 
                                 
 
