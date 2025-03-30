@@ -192,155 +192,137 @@ def retrieve_object_frames(object):
 # --- Streamlit App ---
 def app():
     st.title("🔍 Object Classification and Detection")
-
-    # User authentication
-    if "authenticated" not in st.session_state:
-        st.session_state["authenticated"] = False
-
-    if not st.session_state["authenticated"]:
-        st.title("🔒 Login to Access the App")
-        password = st.text_input("Enter password", type="password")
-        if st.button("Login"):
-            if password == "rao":
-                st.session_state["authenticated"] = True
-                st.success("✅ Login successful!")
-                st.rerun()
-            else:
-                st.error("❌ Incorrect password. Please try again.")
-
-    if st.session_state["authenticated"]:
-        st.sidebar.success("✅ Authenticated")
         
-        option = st.sidebar.selectbox("Choose an option:", ["Add Object", "Detect Object", "Query Object"])
-        clf, class_names = None, None
+    option = st.sidebar.selectbox("Choose an option:", ["Add Object", "Detect Object", "Query Object"])
+    clf, class_names = None, None
 
-        if option == "Add Object":
-            st.header("📤 Add a New Object")
-            object_name = st.text_input("Enter Object Name")
-            person_name = st.text_input("Enter Your Name")
-            
-            if object_name and person_name:
-                st.write("Upload Four Images of the Object:")
-                uploaded_images = []
-                front_image = st.file_uploader("Upload Front Side Image", type=["jpg", "jpeg", "png"])
-                back_image = st.file_uploader("Upload Back Side Image", type=["jpg", "jpeg", "png"])
-                corner_image = st.file_uploader("Upload Corner View Image", type=["jpg", "jpeg", "png"])
-                side_image = st.file_uploader("Upload Side View Image", type=["jpg", "jpeg", "png"])
+    if option == "Add Object":
+        st.header("📤 Add a New Object")
+        object_name = st.text_input("Enter Object Name")
+        person_name = st.text_input("Enter Your Name")
+        
+        if object_name and person_name:
+            st.write("Upload Four Images of the Object:")
+            uploaded_images = []
+            front_image = st.file_uploader("Upload Front Side Image", type=["jpg", "jpeg", "png"])
+            back_image = st.file_uploader("Upload Back Side Image", type=["jpg", "jpeg", "png"])
+            corner_image = st.file_uploader("Upload Corner View Image", type=["jpg", "jpeg", "png"])
+            side_image = st.file_uploader("Upload Side View Image", type=["jpg", "jpeg", "png"])
 
-                if front_image and back_image and corner_image and side_image:
-                    uploaded_images = [Image.open(front_image), Image.open(back_image),
-                                       Image.open(corner_image), Image.open(side_image)]
-                    folder_name = f"{person_name}_{object_name}"
-                    save_new_object(uploaded_images, folder_name)
-                    st.success(f"📂 Object '{object_name}' added successfully! You can now train the model.")
-                    
-                    if st.button("Train Model Now"):
+            if front_image and back_image and corner_image and side_image:
+                uploaded_images = [Image.open(front_image), Image.open(back_image),
+                                    Image.open(corner_image), Image.open(side_image)]
+                folder_name = f"{person_name}_{object_name}"
+                save_new_object(uploaded_images, folder_name)
+                st.success(f"📂 Object '{object_name}' added successfully! You can now train the model.")
+                
+                if st.button("Train Model Now"):
+                    clf, class_names = train_model()
+                    if clf:
+                        st.success("🎉 Model training completed!")
+
+    elif option == "Detect Object":
+        st.header("🕵️‍♂️ Detect an Object")
+        choice = st.radio("Choose detection method", ["By Image", "By Video"])
+
+        if choice == "By Image":
+            test_image = st.file_uploader("Upload an Image for Classification", type=["jpg", "jpeg", "png"])
+            if test_image:
+                image = Image.open(test_image)
+                st.image(image, caption="Uploaded Image")
+
+                # ---- New: YOLO cropping step for multiple detections ----
+                with st.spinner("🔄 Cropping image using YOLO..."):
+                    cropped_images = crop_with_yolo(image)
+                # Display each cropped image
+                if not cropped_images:
+                    st.write("### No Objects Detected")
+                    st.write("Try uploading a clearer picture")
+                else:
+                    for idx, cropped_image in enumerate(cropped_images):
+                        st.image(cropped_image, caption=f"YOLO Cropped Region {idx+1}")
+                    # -------------------------------------------------------------
+
+                    with st.spinner("🔍 Loading trained model..."):
                         clf, class_names = train_model()
-                        if clf:
-                            st.success("🎉 Model training completed!")
 
-        elif option == "Detect Object":
-            st.header("🕵️‍♂️ Detect an Object")
-            choice = st.radio("Choose detection method", ["By Image", "By Video"])
-
-            if choice == "By Image":
-                test_image = st.file_uploader("Upload an Image for Classification", type=["jpg", "jpeg", "png"])
-                if test_image:
-                    image = Image.open(test_image)
-                    st.image(image, caption="Uploaded Image")
-
-                    # ---- New: YOLO cropping step for multiple detections ----
-                    with st.spinner("🔄 Cropping image using YOLO..."):
-                        cropped_images = crop_with_yolo(image)
-                    # Display each cropped image
-                    if not cropped_images:
-                        st.write("### No Objects Detected")
-                        st.write("Try uploading a clearer picture")
-                    else:
+                    if clf:
+                        st.write("### Classification Results")
                         for idx, cropped_image in enumerate(cropped_images):
-                            st.image(cropped_image, caption=f"YOLO Cropped Region {idx+1}")
-                        # -------------------------------------------------------------
+                            prediction, confidence, probabilities = classify(cropped_image, clf, class_names)
+                            st.write(f"**Region {idx+1} Prediction:** {prediction}")
+                            st.write(f"**Confidence:** {confidence:.2f}%")
+                            st.write("**Class Probabilities:**")
+                            for i, cls_name in enumerate(class_names):
+                                st.write(f"   - {cls_name}: {probabilities[i] * 100:.2f}%")
+                            st.markdown("---")
+                        # Optional warning if none of the detections are confident enough
+
+        elif choice == "By Video":
+            video_file = st.file_uploader("Upload a video for object detection", type=["mp4", "avi", "mov"])
+            if video_file:
+                temp_video_path = tempfile.NamedTemporaryFile(delete=False).name
+                with open(temp_video_path, "wb") as f:
+                    f.write(video_file.read())
+
+                st.video(temp_video_path)
+                extracted_folder = os.path.join("extracted_frames", os.path.splitext(video_file.name)[0])
+                os.makedirs(extracted_folder, exist_ok=True)
+
+                with st.spinner("📸 Extracting frames..."):
+                    frames, frame_indices = extract_frames_cv2(temp_video_path, extracted_folder)
+
+                if frames:
+                    st.success(f"✅ Frames extracted and saved in: `{extracted_folder}`")
+
+                    if st.button("🚀 Start Classification"):
+                        detected_objects = {}
 
                         with st.spinner("🔍 Loading trained model..."):
                             clf, class_names = train_model()
 
                         if clf:
-                            st.write("### Classification Results")
-                            for idx, cropped_image in enumerate(cropped_images):
-                                prediction, confidence, probabilities = classify(cropped_image, clf, class_names)
-                                st.write(f"**Region {idx+1} Prediction:** {prediction}")
-                                st.write(f"**Confidence:** {confidence:.2f}%")
-                                st.write("**Class Probabilities:**")
-                                for i, cls_name in enumerate(class_names):
-                                    st.write(f"   - {cls_name}: {probabilities[i] * 100:.2f}%")
-                                st.markdown("---")
-                            # Optional warning if none of the detections are confident enough
+                            for frame, frame_index in zip(frames, frame_indices):
+                                # ---- Run YOLO cropping on each frame ----
+                                cropped_regions = crop_with_yolo(frame)
+                                if not cropped_regions:
+                                    st.warning(f"⚠️ No objects detected in frame {frame_index}. Skipping further processing for this frame.")
+                                    continue
+                                # Classify each detected region
+                                for idx, cropped_region in enumerate(cropped_regions):
+                                    prediction, confidence, _ = classify(cropped_region, clf, class_names)
+                                    st.image(cropped_region, caption=f"Frame {frame_index} - Region {idx+1}: {prediction} ({confidence:.2f}%)", width=300)
+                                    if confidence > 50:
+                                        detected_objects[prediction] = detected_objects.get(prediction, 0) + 1
+                                        timestamp = str(timedelta(seconds=frame_index // 24))
+                                        log_detection(prediction, timestamp)
 
-            elif choice == "By Video":
-                video_file = st.file_uploader("Upload a video for object detection", type=["mp4", "avi", "mov"])
-                if video_file:
-                    temp_video_path = tempfile.NamedTemporaryFile(delete=False).name
-                    with open(temp_video_path, "wb") as f:
-                        f.write(video_file.read())
+                            st.write("### Detected Objects Summary:")
+                            if detected_objects:
+                                for obj, count in detected_objects.items():
+                                    st.write(f"- **{obj}** detected in {count} regions across frames.")
+                            else:
+                                st.warning("⚠️ No confident objects detected in the video.")
 
-                    st.video(temp_video_path)
-                    extracted_folder = os.path.join("extracted_frames", os.path.splitext(video_file.name)[0])
-                    os.makedirs(extracted_folder, exist_ok=True)
+                            st.write("### Detection Summary:")
 
-                    with st.spinner("📸 Extracting frames..."):
-                        frames, frame_indices = extract_frames_cv2(temp_video_path, extracted_folder)
+                
+    elif option == "Query Object":
 
-                    if frames:
-                        st.success(f"✅ Frames extracted and saved in: `{extracted_folder}`")
+        objects = redis_client.keys("*")
 
-                        if st.button("🚀 Start Classification"):
-                            detected_objects = {}
+        if objects == []:
+            st.write("No objects in database, please run detection on a video first")
+        
+        else:
+            # query = st.radio("Select an object:", objects)
+            query = st.radio("Select an object:", os.listdir("dataset"))                          
+            timestamps = retrieve_object_frames(query)
 
-                            with st.spinner("🔍 Loading trained model..."):
-                                clf, class_names = train_model()
-
-                            if clf:
-                                for frame, frame_index in zip(frames, frame_indices):
-                                    # ---- Run YOLO cropping on each frame ----
-                                    cropped_regions = crop_with_yolo(frame)
-                                    if not cropped_regions:
-                                        st.warning(f"⚠️ No objects detected in frame {frame_index}. Skipping further processing for this frame.")
-                                        continue
-                                    # Classify each detected region
-                                    for idx, cropped_region in enumerate(cropped_regions):
-                                        prediction, confidence, _ = classify(cropped_region, clf, class_names)
-                                        st.image(cropped_region, caption=f"Frame {frame_index} - Region {idx+1}: {prediction} ({confidence:.2f}%)", width=300)
-                                        if confidence > 50:
-                                            detected_objects[prediction] = detected_objects.get(prediction, 0) + 1
-                                            timestamp = str(timedelta(seconds=frame_index // 24))
-                                            log_detection(prediction, timestamp)
-  
-                                st.write("### Detected Objects Summary:")
-                                if detected_objects:
-                                    for obj, count in detected_objects.items():
-                                        st.write(f"- **{obj}** detected in {count} regions across frames.")
-                                else:
-                                    st.warning("⚠️ No confident objects detected in the video.")
-
-                                st.write("### Detection Summary:")
-
-                    
-        elif option == "Query Object":
-
-            objects = redis_client.keys("*")
-
-            if objects == []:
-                st.write("No objects in database, please run detection on a video first")
-            
-            else:
-                # query = st.radio("Select an object:", objects)
-                query = st.radio("Select an object:", os.listdir("dataset"))                          
-                timestamps = retrieve_object_frames(query)
-
-                if timestamps == []:
-                    st.write(f"**{query} was never detected in the video")
-                else:    
-                    st.write(f"**Video Timestamps where {query} was detected:** {sorted(timestamps)}")
+            if timestamps == []:
+                st.write(f"**{query} was never detected in the video")
+            else:    
+                st.write(f"**Video Timestamps where {query} was detected:** {sorted(timestamps)}")
 
 
                                 
