@@ -191,7 +191,7 @@ def retrieve_object_frames(object):
 
 # --- Streamlit App ---
 def app():
-    st.title("🔍 Object Classification and Detection")
+    st.title("🔍 Personalized Object Detection")
         
     option = st.sidebar.selectbox("Choose an option:", ["Add Object", "Detect Object", "Query Object"])
     clf, class_names = None, None
