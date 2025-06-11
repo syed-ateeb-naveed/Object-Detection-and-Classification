@@ -30,7 +30,7 @@ redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
 # Load YOLO model (ensure the YOLO weights path is correct)
 @st.cache_resource
 def load_yolo_model():
-    yolo_model = YOLO("best.pt")
+    yolo_model = YOLO("best_s.pt")
     return yolo_model
 
 yolo_model = load_yolo_model()
@@ -259,6 +259,7 @@ def app():
                         # Optional warning if none of the detections are confident enough
 
         elif choice == "By Video":
+            redis_client.flushall(asynchronous=False) 
             video_file = st.file_uploader("Upload a video for object detection", type=["mp4", "avi", "mov"])
             if video_file:
                 temp_video_path = tempfile.NamedTemporaryFile(delete=False).name
